@@ -29,8 +29,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -52,13 +50,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
-import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -66,9 +62,6 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.zeny.wazpay.ui.theme.WazpayTheme
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.Executors
 
 private const val TAG = "WazPay-Main"
@@ -127,6 +120,13 @@ fun MainContent() {
     var amount by rememberSaveable { mutableStateOf("") }
     var upiPin by rememberSaveable { mutableStateOf("") }
 
+    LaunchedEffect(screenState) {
+        if (screenState == "RECIPIENT") {
+            amount = ""
+            upiPin = ""
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
@@ -158,7 +158,6 @@ fun MainContent() {
             "AMOUNT" -> screenState = "RECIPIENT"
             "PIN" -> screenState = "AMOUNT"
             "SUCCESS" -> screenState = "RECIPIENT"
-            "HISTORY" -> screenState = "RECIPIENT"
             "PROCESSING" -> screenState = "RECIPIENT"
         }
     }
@@ -189,8 +188,7 @@ fun MainContent() {
                                 value = recipient, 
                                 onValueChange = { recipient = it }, 
                                 onNext = { screenState = "AMOUNT" },
-                                onScanClick = { screenState = "SCANNER" },
-                                onHistoryClick = { screenState = "HISTORY" }
+                                onScanClick = { screenState = "SCANNER" }
                             )
                             "SCANNER" -> QrScannerScreen(
                                 onScanned = { upiId ->
@@ -212,7 +210,6 @@ fun MainContent() {
                                 screenState = "PROCESSING"
                                 initiatePayment(context, recipient, amount, selectedSim)
                             }, onBack = { screenState = "AMOUNT" })
-                            "HISTORY" -> HistoryScreen(context, onBack = { screenState = "RECIPIENT" })
                             "PROCESSING" -> TransactionProcessingScreen { screenState = "RECIPIENT" }
                             "SUCCESS" -> {
                                 val name = sharedPreferences.getString("last_recipient_name", recipient) ?: recipient
@@ -308,11 +305,10 @@ fun SetupScreen(onComplete: (String, Int) -> Unit) {
 }
 
 @Composable
-fun RecipientScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> Unit, onScanClick: () -> Unit, onHistoryClick: () -> Unit) {
+fun RecipientScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> Unit, onScanClick: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp).imePadding().verticalScroll(rememberScrollState())) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("WazPay", fontSize = 24.sp, fontWeight = FontWeight.Black, color = Color.White)
-            IconButton(onClick = onHistoryClick) { Icon(Icons.Default.History, null, tint = Color.White) }
         }
         Spacer(modifier = Modifier.height(48.dp))
         Text("Send Money", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
@@ -354,9 +350,12 @@ fun PinScreen(value: String, onValueChange: (String) -> Unit, onPay: () -> Unit,
         }
         Spacer(modifier = Modifier.weight(0.5f))
         Text("UPI PIN", color = Color.Gray, fontSize = 16.sp)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (pinVisible) value else "•".repeat(value.length), fontSize = 48.sp, color = Color.White, letterSpacing = 8.sp)
-            IconButton(onClick = { pinVisible = !pinVisible }) { Icon(if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = Color.White) }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(if (pinVisible) value else "•".repeat(value.length), fontSize = 48.sp, color = Color.White, letterSpacing = 8.sp)
+        TextButton(onClick = { pinVisible = !pinVisible }) {
+            Icon(if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(if (pinVisible) "Hide PIN" else "Show PIN", color = Color.Gray, fontSize = 12.sp)
         }
         Spacer(modifier = Modifier.weight(1f))
         CustomKeypad(onKeyClick = { if (value.length < 6) onValueChange(value + it) }, onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) })
@@ -476,65 +475,6 @@ private fun processImageProxy(scanner: com.google.mlkit.vision.barcode.BarcodeSc
         }.addOnCompleteListener { imageProxy.close() }
     } else {
         imageProxy.close()
-    }
-}
-
-@Composable
-fun HistoryScreen(context: Context, onBack: () -> Unit) {
-    val db = remember { AppDatabase.getDatabase(context) }
-    val transactions by db.transactionDao().getAll().collectAsState(initial = emptyList())
-
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) }
-            Text("Transaction History", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        }
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        if (transactions.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No transactions found", color = Color.Gray)
-            }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(transactions) { transaction ->
-                    TransactionItem(transaction)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun TransactionItem(transaction: Transaction) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF111111)),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(transaction.recipient, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(transaction.timestamp)),
-                    color = Color.Gray,
-                    fontSize = 12.sp
-                )
-                if (!transaction.refId.isNullOrEmpty()) {
-                    Text("Ref: ${transaction.refId}", color = Color.DarkGray, fontSize = 10.sp)
-                }
-            }
-            Text(
-                "₹${transaction.amount}",
-                color = if (transaction.status == "SUCCESS") Color.White else Color.Red,
-                fontWeight = FontWeight.Black,
-                fontSize = 18.sp
-            )
-        }
     }
 }
 

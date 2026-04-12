@@ -1,7 +1,6 @@
 package com.zeny.wazpay
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Context.MODE_PRIVATE
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -10,31 +9,15 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.edit
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 class UssdService : AccessibilityService() {
 
-    private val serviceScope = CoroutineScope(Dispatchers.IO)
-    private val TAG = "WazPay-USSD"
     private val handler = Handler(Looper.getMainLooper())
-
-    private val TELECOM_PACKAGES = setOf(
-        "com.android.phone",
-        "com.android.server.telecom",
-        "com.google.android.dialer",
-        "com.samsung.android.incallui",
-        "com.android.systemui",
-        "com.android.settings",
-        "com.android.incallui"
-    )
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
         
-        // Performance fix: Only process relevant telecom packages
-        if (packageName !in TELECOM_PACKAGES) return
+        if (packageName !in telecomPackages) return
 
         val rootNode = rootInActiveWindow ?: return
         try {
@@ -49,22 +32,33 @@ class UssdService : AccessibilityService() {
             val pendingAmount = sharedPreferences.getString("pending_amount", null)
             val pendingPin = sharedPreferences.getString("pending_pin", null)
 
-            // 1. PIN Entry (High Priority)
+            // --- Success Detection Logic (Always check) ---
+            val isSuccess = isSuccessMessage(allTexts)
+            if (isSuccess && pendingRecipient != null) {
+                Log.i(TAG, "Success Detected! Saving data.")
+                sharedPreferences.edit { 
+                    putBoolean("last_payment_success", true)
+                    remove("pending_recipient")
+                    remove("pending_amount")
+                    remove("pending_pin")
+                }
+                extractSuccessData(allTexts)
+            }
+
+            // 1. PIN Entry
             if (pendingPin != null && isActuallyPinPrompt(allTexts)) {
                 Log.i(TAG, "Step: PIN Input Detected")
                 findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                     autoFillAndSend(it, pendingPin)
-                    it.recycle()
                     return
                 }
             }
 
-            // 2. Confirmation Prompt (High Priority - before Success check)
+            // 2. Confirmation Prompt
             if (isConfirmationPrompt(allTexts)) {
                 Log.i(TAG, "Step: Confirmation Detected - Replying 1")
                 findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                     autoFillAndSend(it, "1")
-                    it.recycle()
                     return
                 }
             }
@@ -74,7 +68,6 @@ class UssdService : AccessibilityService() {
                 Log.i(TAG, "Step: Recipient Input Detected")
                 findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                     autoFillAndSend(it, pendingRecipient)
-                    it.recycle()
                     return
                 }
             }
@@ -84,7 +77,6 @@ class UssdService : AccessibilityService() {
                 Log.i(TAG, "Step: Amount Input Detected")
                 findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                     autoFillAndSend(it, pendingAmount)
-                    it.recycle()
                     return
                 }
             }
@@ -94,45 +86,44 @@ class UssdService : AccessibilityService() {
                 Log.i(TAG, "Step: Remark Prompt - Skipping")
                 findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                     autoFillAndSend(it, "1")
-                    it.recycle()
                     return
                 }
             }
 
-            // 6. Feedback Screen
+            // 6. Feedback Screen (Click Cancel)
             if (isFeedbackPrompt(allTexts)) {
-                Log.i(TAG, "Step: Feedback Prompt - Replying with brand message")
-                findNodeByClassName(rootNode, "android.widget.EditText")?.let {
-                    autoFillAndSend(it, "payed with wazpay!")
-                    it.recycle()
-                    return
-                }
-            }
-
-            // 7. Exit Dialog / Success Screen
-            if (isExitDialog(allTexts)) {
-                Log.i(TAG, "Step: Exit Dialog Detected")
-                val isSuccess = isSuccessMessage(allTexts)
-                if (isSuccess) {
-                    Log.i(TAG, "Definitive Success. Clearing pending data.")
+                Log.i(TAG, "Step: Feedback Prompt - Clicking Cancel")
+                val isSuccessFeedback = isSuccessMessage(allTexts)
+                if (isSuccessFeedback && pendingRecipient != null) {
                     sharedPreferences.edit { 
                         putBoolean("last_payment_success", true)
                         remove("pending_recipient")
                         remove("pending_amount")
                         remove("pending_pin")
                     }
-                    saveTransaction(sharedPreferences, "SUCCESS")
+                    extractSuccessData(allTexts)
                 }
-                extractSuccessData(allTexts)
-
-                val editText = findNodeByClassName(rootNode, "android.widget.EditText")
-                if (editText != null) {
-                    autoFillAndSend(editText, "2")
-                    editText.recycle()
+                
+                val cancelButton = findButtonByText(rootNode, "cancel")
+                if (cancelButton != null) {
+                    Log.d(TAG, "Action: Clicking Cancel Button specifically")
+                    cancelButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 } else {
                     clickSendOrOk()
                 }
+                if (isSuccess || isSuccessFeedback) bringAppToForeground(delay = 1000)
+                return
+            }
 
+            // 7. Exit Dialog
+            if (isExitDialog(allTexts)) {
+                Log.i(TAG, "Step: Exit Dialog Detected")
+                val editText = findNodeByClassName(rootNode, "android.widget.EditText")
+                if (editText != null) {
+                    autoFillAndSend(editText, "2")
+                } else {
+                    clickSendOrOk()
+                }
                 if (isSuccess) bringAppToForeground(delay = 1000)
                 return
             }
@@ -140,18 +131,12 @@ class UssdService : AccessibilityService() {
             // 8. Thank You / Final Screen
             if (isThankYouDialog(allTexts)) {
                 Log.i(TAG, "Step: Final Success Screen Detected")
-                sharedPreferences.edit { 
-                    putBoolean("last_payment_success", true)
-                    remove("pending_recipient")
-                    remove("pending_amount")
-                    remove("pending_pin")
-                }
-                saveTransaction(sharedPreferences, "SUCCESS")
                 clickSendOrOk()
                 bringAppToForeground(delay = 500)
+                return
             }
         } finally {
-            rootNode.recycle()
+            // No cleanup needed
         }
     }
 
@@ -193,9 +178,9 @@ class UssdService : AccessibilityService() {
     private fun isFeedbackPrompt(texts: List<String>): Boolean = 
         texts.any { 
             it.contains("Feedback", true) || it.contains("comment", true) || it.contains("rate", true) || 
-            it.contains("thank", true) && it.contains("using", true) || it.contains("Experience", true) ||
+            (it.contains("thank", true) && it.contains("using", true)) || it.contains("Experience", true) ||
             it.contains("Quality", true) || it.contains("Service", true) || 
-            it.contains("Opinion", true) || (it.contains("UPI", true) && it.contains("Transaction", true))
+            it.contains("Opinion", true)
         }
 
     private fun isActuallyPinPrompt(texts: List<String>): Boolean = 
@@ -208,10 +193,15 @@ class UssdService : AccessibilityService() {
         texts.any { it.contains("Thank you", true) || it.contains("Payment Sent", true) || it.contains("completed", true) || it.contains("Request processed", true) }
 
     private fun isSuccessMessage(texts: List<String>): Boolean {
+        // Safety check: if it's a PIN prompt or Input prompt, it's not a success message yet
+        if (isActuallyPinPrompt(texts) || isRecipientInputPrompt(texts) || isAmountInputPrompt(texts)) return false
+
         val fullText = texts.joinToString(" ").lowercase()
         return (fullText.contains("success") || 
                fullText.contains("sent") || 
                fullText.contains("successful") || 
+               fullText.contains("completed") ||
+               fullText.contains("processed") ||
                fullText.contains("request processed") ||
                fullText.contains("ref id") ||
                fullText.contains("txn id")) &&
@@ -226,7 +216,6 @@ class UssdService : AccessibilityService() {
             val child = node.getChild(i)
             if (child != null) {
                 findAllTextNodes(child, texts, depth + 1)
-                child.recycle()
             }
         }
     }
@@ -253,19 +242,18 @@ class UssdService : AccessibilityService() {
                 if (button != null) {
                     Log.d(TAG, "Action: Clicking ${button.text}")
                     button.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    button.recycle()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to click button", e)
-            } finally {
-                currentRoot.recycle()
             }
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun findButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.className?.toString()?.contains("android.widget.Button") == true) {
             val btnText = node.text?.toString()?.lowercase() ?: ""
+            // Exclude "cancel" from default button finding to avoid clicking it in PIN dialogs
             if (btnText in listOf("send", "ok", "dismiss", "answer", "submit", "accept")) {
                 return AccessibilityNodeInfo.obtain(node)
             }
@@ -274,13 +262,30 @@ class UssdService : AccessibilityService() {
             val child = node.getChild(i)
             if (child != null) {
                 val found = findButton(child)
-                child.recycle()
                 if (found != null) return found
             }
         }
         return null
     }
 
+    @Suppress("DEPRECATION")
+    private fun findButtonByText(node: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
+        if (node.className?.toString()?.contains("android.widget.Button") == true) {
+            if (node.text?.toString()?.equals(text, true) == true) {
+                return AccessibilityNodeInfo.obtain(node)
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            if (child != null) {
+                val found = findButtonByText(child, text)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    @Suppress("DEPRECATION")
     private fun findNodeByClassName(node: AccessibilityNodeInfo, className: String): AccessibilityNodeInfo? {
         if (node.className?.toString()?.contains(className) == true) {
             return AccessibilityNodeInfo.obtain(node)
@@ -289,7 +294,6 @@ class UssdService : AccessibilityService() {
             val child = node.getChild(i)
             if (child != null) {
                 val found = findNodeByClassName(child, className)
-                child.recycle()
                 if (found != null) return found
             }
         }
@@ -310,28 +314,18 @@ class UssdService : AccessibilityService() {
         }, delay)
     }
 
-    private fun saveTransaction(prefs: android.content.SharedPreferences, status: String) {
-        // Prevent duplicate saves for the same session if possible
-        val recipient = prefs.getString("last_recipient_name", "Unknown") ?: "Unknown"
-        val amount = prefs.getString("pending_amount", "0") ?: "0"
-        val refId = prefs.getString("last_ref_id", null)
-
-        serviceScope.launch {
-            try {
-                val db = AppDatabase.getDatabase(applicationContext)
-                db.transactionDao().insert(
-                    Transaction(
-                        recipient = recipient,
-                        amount = amount,
-                        refId = refId,
-                        status = status
-                    )
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to save transaction to Room", e)
-            }
-        }
-    }
-
     override fun onInterrupt() {}
+
+    companion object {
+        private const val TAG = "WazPay-USSD"
+        private val telecomPackages = setOf(
+            "com.android.phone",
+            "com.android.server.telecom",
+            "com.google.android.dialer",
+            "com.samsung.android.incallui",
+            "com.android.systemui",
+            "com.android.settings",
+            "com.android.incallui"
+        )
+    }
 }
