@@ -25,9 +25,13 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -43,9 +47,17 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -120,10 +132,15 @@ fun MainContent() {
     var amount by rememberSaveable { mutableStateOf("") }
     var upiPin by rememberSaveable { mutableStateOf("") }
 
+    var isScannedInput by remember { mutableStateOf(false) }
+
     LaunchedEffect(screenState) {
-        if (screenState == "RECIPIENT") {
+        if (screenState == "RECIPIENT" && !isScannedInput) {
             amount = ""
             upiPin = ""
+        }
+        if (screenState != "SCANNER" && screenState != "AMOUNT") {
+            isScannedInput = false
         }
     }
 
@@ -131,7 +148,6 @@ fun MainContent() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         hasPermissions = results.values.all { it }
-        Log.i(TAG, "Permissions updated: $hasPermissions")
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -143,7 +159,6 @@ fun MainContent() {
                 }
                 
                 if (sharedPreferences.getBoolean("last_payment_success", false)) {
-                    Log.i(TAG, "Payment success detected on resume")
                     screenState = "SUCCESS"
                 }
             }
@@ -162,69 +177,90 @@ fun MainContent() {
         }
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            when (screenState) {
-                "SPLASH" -> SplashScreen {
-                    screenState = if (bankIfscPrefix.isEmpty()) "SETUP" else "RECIPIENT"
-                }
-                else -> {
-                    if (!hasPermissions && screenState != "SETUP") {
-                        PermissionRequestScreen {
-                            permissionLauncher.launch(requiredPermissions)
+    val currentView = when {
+        screenState == "SPLASH" -> "SPLASH"
+        !hasPermissions && screenState != "SETUP" -> "PERMISSION"
+        !isAccessEnabled && screenState != "SETUP" -> "ACCESSIBILITY"
+        else -> screenState
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(), 
+        color = MaterialTheme.colorScheme.background
+    ) {
+        AnimatedContent(
+            targetState = currentView,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+            },
+            label = "ScreenTransition",
+            contentAlignment = Alignment.Center
+        ) { state ->
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                when (state) {
+                    "SPLASH" -> SplashScreen {
+                        screenState = if (bankIfscPrefix.isEmpty()) "SETUP" else "RECIPIENT"
+                    }
+                    "PERMISSION" -> OnboardingScreen(
+                        title = "Permissions Required",
+                        description = "WazPay needs Phone, Call, and Camera permissions to process payments and scan QR codes securely.",
+                        icon = Icons.Default.Security,
+                        actionLabel = "Grant Permissions",
+                        onAction = { permissionLauncher.launch(requiredPermissions) }
+                    )
+                    "ACCESSIBILITY" -> OnboardingScreen(
+                        title = "Enable Accessibility",
+                        description = "WazPay uses Accessibility Service to automate USSD menus. Please enable 'WazPay USSD Service' in Settings.",
+                        icon = Icons.Default.Accessibility,
+                        actionLabel = "Go to Settings",
+                        onAction = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                    )
+                    "SETUP" -> SetupScreen(onComplete = { ifsc, sim ->
+                        sharedPreferences.edit { putString("bank_ifsc", ifsc); putInt("selected_sim", sim) }
+                        screenState = "RECIPIENT"
+                    })
+                    "RECIPIENT" -> RecipientScreen(
+                        value = recipient, 
+                        onValueChange = { recipient = it }, 
+                        onNext = { screenState = "AMOUNT" },
+                        onScanClick = { screenState = "SCANNER" }
+                    )
+                    "SCANNER" -> QrScannerScreen(
+                        onScanned = { upiId ->
+                            recipient = upiId
+                            isScannedInput = true
+                            screenState = "AMOUNT"
+                        },
+                        onBack = { screenState = "RECIPIENT" }
+                    )
+                    "AMOUNT" -> AmountScreen(amount, onValueChange = { amount = it }, onNext = { screenState = "PIN" }, onBack = { screenState = "RECIPIENT" })
+                    "PIN" -> PinScreen(upiPin, onValueChange = { upiPin = it }, onPay = {
+                        sharedPreferences.edit { 
+                            putString("pending_recipient", recipient)
+                            putString("pending_amount", amount)
+                            putString("pending_pin", upiPin)
+                            remove("last_payment_success")
                         }
-                    } else if (!isAccessEnabled && screenState != "SETUP") {
-                        AccessibilityRequestScreen(onGoToSettings = {
-                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                        })
-                    } else {
-                        when (screenState) {
-                            "SETUP" -> SetupScreen(onComplete = { ifsc, sim ->
-                                Log.i(TAG, "Setup complete: IFSC=$ifsc, SIM=$sim")
-                                sharedPreferences.edit { putString("bank_ifsc", ifsc); putInt("selected_sim", sim) }
-                                screenState = "RECIPIENT"
-                            })
-                            "RECIPIENT" -> RecipientScreen(
-                                value = recipient, 
-                                onValueChange = { recipient = it }, 
-                                onNext = { screenState = "AMOUNT" },
-                                onScanClick = { screenState = "SCANNER" }
-                            )
-                            "SCANNER" -> QrScannerScreen(
-                                onScanned = { upiId ->
-                                    Log.i(TAG, "QR Scanned: $upiId")
-                                    recipient = upiId
-                                    screenState = "AMOUNT"
-                                },
-                                onBack = { screenState = "RECIPIENT" }
-                            )
-                            "AMOUNT" -> AmountScreen(amount, onValueChange = { amount = it }, onNext = { screenState = "PIN" }, onBack = { screenState = "RECIPIENT" })
-                            "PIN" -> PinScreen(upiPin, onValueChange = { upiPin = it }, onPay = {
-                                Log.i(TAG, "Payment initiated for ₹$amount to $recipient")
-                                sharedPreferences.edit { 
-                                    putString("pending_recipient", recipient)
-                                    putString("pending_amount", amount)
-                                    putString("pending_pin", upiPin)
-                                    remove("last_payment_success")
-                                }
-                                screenState = "PROCESSING"
-                                initiatePayment(context, recipient, amount, selectedSim)
-                            }, onBack = { screenState = "AMOUNT" })
-                            "PROCESSING" -> TransactionProcessingScreen { screenState = "RECIPIENT" }
-                            "SUCCESS" -> {
-                                val name = sharedPreferences.getString("last_recipient_name", recipient) ?: recipient
-                                val refId = sharedPreferences.getString("last_ref_id", "N/A") ?: "N/A"
-                                val successAmount = sharedPreferences.getString("pending_amount", amount) ?: amount
-                                SuccessScreen(name, refId, successAmount) {
-                                    sharedPreferences.edit { 
-                                        remove("last_payment_success")
-                                        remove("last_recipient_name")
-                                        remove("last_ref_id")
-                                        remove("pending_amount")
-                                    }
-                                    recipient = ""; amount = ""; upiPin = ""; screenState = "RECIPIENT"
-                                }
+                        screenState = "PROCESSING"
+                        initiatePayment(context, recipient, amount, selectedSim)
+                    }, onBack = { screenState = "AMOUNT" })
+                    "PROCESSING" -> TransactionProcessingScreen { screenState = "RECIPIENT" }
+                    "SUCCESS" -> {
+                        val name = sharedPreferences.getString("last_recipient_name", recipient) ?: recipient
+                        val refId = sharedPreferences.getString("last_ref_id", "N/A") ?: "N/A"
+                        val successAmount = sharedPreferences.getString("pending_amount", amount) ?: amount
+                        SuccessScreen(name, refId, successAmount) {
+                            sharedPreferences.edit { 
+                                remove("last_payment_success")
+                                remove("last_recipient_name")
+                                remove("last_ref_id")
+                                remove("pending_amount")
                             }
+                            recipient = ""; amount = ""; upiPin = ""; screenState = "RECIPIENT"
                         }
                     }
                 }
@@ -235,45 +271,108 @@ fun MainContent() {
 
 @Composable
 fun SplashScreen(onDone: () -> Unit) {
-    var progress by remember { mutableFloatStateOf(0f) }
+    var startAnimation by remember { mutableStateOf(false) }
+    val alpha by animateFloatAsState(
+        targetValue = if (startAnimation) 1f else 0f,
+        animationSpec = tween(1000),
+        label = "AlphaAnimation"
+    )
+    
     LaunchedEffect(Unit) {
-        while (progress < 1f) {
-            delay(20)
-            progress += 0.02f
-        }
+        delay(100)
+        startAnimation = true
+        delay(2000)
         onDone()
     }
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding(), contentAlignment = Alignment.Center) {
-        LinearProgressIndicator(progress = { progress }, modifier = Modifier.width(200.dp).height(2.dp), color = Color.White, trackColor = Color.DarkGray)
-    }
-}
 
-@Composable
-fun PermissionRequestScreen(onRequest: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(Icons.Default.Security, null, tint = Color.White, modifier = Modifier.size(64.dp))
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Permissions Required", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("WazPay needs Phone, Call, and Camera permissions to process payments and scan QR codes securely.", textAlign = TextAlign.Center, color = Color.Gray)
-        Spacer(modifier = Modifier.height(48.dp))
-        Button(onClick = onRequest, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
-            Text("Grant Permissions")
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "WAZPAY",
+                style = MaterialTheme.typography.displayMedium,
+                letterSpacing = 8.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.alpha(alpha)
+            )
         }
+        
+        LinearProgressIndicator(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 64.dp)
+                .width(140.dp)
+                .height(2.dp)
+                .clip(CircleShape),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant
+        )
     }
 }
 
 @Composable
-fun AccessibilityRequestScreen(onGoToSettings: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(Icons.Default.Accessibility, null, tint = Color.White, modifier = Modifier.size(64.dp))
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Enable Accessibility", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+fun OnboardingScreen(
+    title: String,
+    description: String,
+    icon: ImageVector,
+    actionLabel: String,
+    onAction: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(100.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(48.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(40.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineMedium,
+            textAlign = TextAlign.Center
+        )
         Spacer(modifier = Modifier.height(16.dp))
-        Text("WazPay uses Accessibility Service to automate USSD menus. Please enable 'WazPay USSD Service' in Settings.", textAlign = TextAlign.Center, color = Color.Gray)
-        Spacer(modifier = Modifier.height(48.dp))
-        Button(onClick = onGoToSettings, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
-            Text("Go to Settings")
+        Text(
+            text = description,
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(64.dp))
+        Button(
+            onClick = onAction,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            )
+        ) {
+            Text(actionLabel, style = MaterialTheme.typography.titleLarge)
         }
     }
 }
@@ -282,129 +381,517 @@ fun AccessibilityRequestScreen(onGoToSettings: () -> Unit) {
 fun SetupScreen(onComplete: (String, Int) -> Unit) {
     var ifsc by remember { mutableStateOf("") }
     var selectedSim by remember { mutableIntStateOf(0) }
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(32.dp), verticalArrangement = Arrangement.Center) {
-        Text("Welcome to WazPay", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Text("Secure USSD Payments", color = Color.Gray)
-        Spacer(modifier = Modifier.height(48.dp))
-        OutlinedTextField(value = ifsc, onValueChange = { if (it.length <= 4) ifsc = it.uppercase() }, label = { Text("Bank IFSC Prefix (e.g., PYTM)") }, modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.DarkGray))
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Select Payment SIM", color = Color.Gray, fontSize = 14.sp)
-        Row(modifier = Modifier.fillMaxWidth()) {
-            listOf("SIM 1", "SIM 2").forEachIndexed { index, label ->
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.selectable(selected = (selectedSim == index), onClick = { selectedSim = index }, role = Role.RadioButton).padding(8.dp)) {
-                    RadioButton(selected = (selectedSim == index), onClick = null, colors = RadioButtonDefaults.colors(selectedColor = Color.White))
-                    Text(label, color = Color.White, modifier = Modifier.padding(start = 8.dp))
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "Welcome to WazPay",
+                style = MaterialTheme.typography.displayMedium,
+                fontWeight = FontWeight.Black,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                "Secure USSD Payments, simplified.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(56.dp))
+            
+            Text(
+                "BANK CONFIGURATION", 
+                style = MaterialTheme.typography.labelLarge, 
+                color = MaterialTheme.colorScheme.secondary,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedTextField(
+                value = ifsc,
+                onValueChange = { if (it.length <= 4) ifsc = it.uppercase() },
+                placeholder = { 
+                    Text(
+                        "Enter Bank IFSC Prefix", 
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    ) 
+                },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = MaterialTheme.typography.titleLarge.copy(textAlign = TextAlign.Center),
+                shape = RoundedCornerShape(16.dp),
+                singleLine = true,
+                leadingIcon = { Spacer(modifier = Modifier.width(24.dp)) },
+                trailingIcon = { Spacer(modifier = Modifier.width(24.dp)) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                )
+            )
+            
+            Spacer(modifier = Modifier.height(40.dp))
+            
+            Text(
+                "SELECT PAYMENT SIM", 
+                style = MaterialTheme.typography.labelLarge, 
+                color = MaterialTheme.colorScheme.secondary,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                listOf("SIM 1", "SIM 2").forEachIndexed { index, label ->
+                    val isSelected = selectedSim == index
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(80.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable { selectedSim = index }
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
-        }
-        Spacer(modifier = Modifier.height(48.dp))
-        Button(onClick = { onComplete(ifsc, selectedSim) }, enabled = ifsc.length == 4, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
-            Text("Complete Setup")
+            
+            Spacer(modifier = Modifier.height(64.dp))
+            
+            Button(
+                onClick = { onComplete(ifsc, selectedSim) },
+                enabled = ifsc.length == 4,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Text("Get Started", style = MaterialTheme.typography.titleLarge)
+            }
         }
     }
 }
 
 @Composable
 fun RecipientScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> Unit, onScanClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp).imePadding().verticalScroll(rememberScrollState())) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("WazPay", fontSize = 24.sp, fontWeight = FontWeight.Black, color = Color.White)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "WAZPAY",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 4.sp,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                textAlign = TextAlign.Center
+            )
+            
+            Spacer(modifier = Modifier.height(60.dp))
+            
+            Text(
+                "Who are you\nsending to?", 
+                style = MaterialTheme.typography.displayMedium, 
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                placeholder = { 
+                    Text(
+                        "UPI ID or Mobile Number", 
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    ) 
+                },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = MaterialTheme.typography.headlineMedium.copy(textAlign = TextAlign.Center),
+                shape = RoundedCornerShape(24.dp),
+                singleLine = true,
+                leadingIcon = {
+                    Box(modifier = Modifier.size(56.dp))
+                },
+                trailingIcon = {
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 4.dp)
+                            .size(48.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        IconButton(
+                            onClick = onScanClick,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, null, tint = MaterialTheme.colorScheme.onPrimary)
+                        }
+                    }
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = Color.Transparent
+                )
+            )
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            Button(
+                onClick = onNext,
+                enabled = value.isNotEmpty(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Text("Continue", style = MaterialTheme.typography.titleLarge)
+            }
         }
-        Spacer(modifier = Modifier.height(48.dp))
-        Text("Send Money", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(modifier = Modifier.height(32.dp))
-        OutlinedTextField(value = value, onValueChange = onValueChange, placeholder = { Text("Enter UPI ID or Mobile Number", color = Color.DarkGray) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedContainerColor = Color(0xFF111111), unfocusedContainerColor = Color(0xFF111111), focusedBorderColor = Color.White, unfocusedBorderColor = Color.DarkGray), trailingIcon = { IconButton(onClick = onScanClick) { Icon(Icons.Default.QrCodeScanner, null, tint = Color.White) } })
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onNext, enabled = value.isNotEmpty(), modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(12.dp)) {
-            Text("Next", fontWeight = FontWeight.Bold)
-        }
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("crafted and secured by fawaz", modifier = Modifier.fillMaxWidth().padding(top = 16.dp), textAlign = TextAlign.Center, fontSize = 12.sp, fontStyle = FontStyle.Italic, color = Color.Gray)
     }
 }
 
 @Composable
 fun AmountScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> Unit, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp).imePadding().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) }
-        }
-        Spacer(modifier = Modifier.weight(0.5f))
-        Text("Amount", color = Color.Gray, fontSize = 16.sp)
-        Text("₹${value.ifEmpty { "0" }}", fontSize = 64.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(modifier = Modifier.weight(1f))
-        CustomKeypad(onKeyClick = { if (value.length < 7) onValueChange(value + it) }, onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) })
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onNext, enabled = value.isNotBlank() && value != "0", modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(12.dp)) {
-            Text("Confirm", fontWeight = FontWeight.Bold)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding()
+            .imePadding(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Amount to send", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "₹", 
+                    style = MaterialTheme.typography.displayLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                    modifier = Modifier.padding(end = 12.dp)
+                )
+                
+                Text(
+                    value.ifEmpty { "0" },
+                    style = MaterialTheme.typography.displayLarge,
+                    fontWeight = FontWeight.Black,
+                    textAlign = TextAlign.Center
+                )
+                
+                // Balancer to keep the amount digit perfectly centered
+                Text(
+                    "₹", 
+                    style = MaterialTheme.typography.displayLarge.copy(color = Color.Transparent),
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(60.dp))
+            
+            CustomKeypad(
+                onKeyClick = { if (value.length < 7) onValueChange(value + it) },
+                onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) }
+            )
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            Button(
+                onClick = onNext,
+                enabled = value.isNotBlank() && value != "0",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Text("Confirm Amount", style = MaterialTheme.typography.titleLarge)
+            }
         }
     }
 }
 
+
 @Composable
 fun PinScreen(value: String, onValueChange: (String) -> Unit, onPay: () -> Unit, onBack: () -> Unit) {
     var pinVisible by remember { mutableStateOf(false) }
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp).imePadding().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) }
-        }
-        Spacer(modifier = Modifier.weight(0.5f))
-        Text("UPI PIN", color = Color.Gray, fontSize = 16.sp)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(if (pinVisible) value else "•".repeat(value.length), fontSize = 48.sp, color = Color.White, letterSpacing = 8.sp)
-        TextButton(onClick = { pinVisible = !pinVisible }) {
-            Icon(if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = Color.Gray, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(if (pinVisible) "Hide PIN" else "Show PIN", color = Color.Gray, fontSize = 12.sp)
-        }
-        Spacer(modifier = Modifier.weight(1f))
-        CustomKeypad(onKeyClick = { if (value.length < 6) onValueChange(value + it) }, onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) })
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onPay, enabled = value.length >= 4, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(12.dp)) {
-            Text("Pay Now", fontWeight = FontWeight.Bold)
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Secure UPI PIN", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (i in 0 until 6) {
+                    val char = value.getOrNull(i)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .border(
+                                width = if (i == value.length) 2.dp else 0.dp,
+                                color = if (i == value.length) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                shape = RoundedCornerShape(12.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (char != null) {
+                            Text(
+                                if (pinVisible) char.toString() else "•",
+                                style = MaterialTheme.typography.headlineMedium
+                            )
+                        }
+                    }
+                }
+            }
+            
+            TextButton(onClick = { pinVisible = !pinVisible }) {
+                Icon(if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (pinVisible) "Hide PIN" else "Show PIN", style = MaterialTheme.typography.labelLarge)
+            }
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            CustomKeypad(
+                onKeyClick = { if (value.length < 6) onValueChange(value + it) },
+                onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) }
+            )
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Button(
+                onClick = onPay,
+                enabled = value.length >= 4,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Text("Pay Securely", style = MaterialTheme.typography.titleLarge)
+            }
         }
     }
 }
 
 @Composable
 fun TransactionProcessingScreen(onCancel: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(64.dp))
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("Processing...", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Light)
-        Spacer(modifier = Modifier.height(64.dp))
-        TextButton(onClick = onCancel) {
-            Text("Return to App", color = Color.Gray)
+    val infiniteTransition = rememberInfiniteTransition(label = "ProcessingTransition")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "Rotation"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(120.dp)
+                .graphicsLayer { rotationZ = rotation }
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(80.dp),
+                color = MaterialTheme.colorScheme.primary,
+                strokeWidth = 6.dp,
+                strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+            )
+        }
+        Spacer(modifier = Modifier.height(48.dp))
+        Text("Processing Transaction", style = MaterialTheme.typography.headlineMedium)
+        Text("Automating USSD requests...", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        
+        Spacer(modifier = Modifier.height(80.dp))
+        
+        OutlinedButton(
+            onClick = onCancel,
+            modifier = Modifier
+                .width(200.dp)
+                .height(56.dp),
+            shape = RoundedCornerShape(28.dp)
+        ) {
+            Text("Cancel", style = MaterialTheme.typography.titleLarge)
         }
     }
 }
 
 @Composable
 fun SuccessScreen(name: String, refId: String, amount: String, onDone: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Box(modifier = Modifier.size(100.dp).border(2.dp, Color.White, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(64.dp)) }
-        Spacer(modifier = Modifier.height(48.dp))
-        Text("SUCCESS", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.Gray, letterSpacing = 4.sp)
-        Text("₹$amount", fontSize = 64.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(name, fontSize = 20.sp, color = Color.White)
-        Spacer(modifier = Modifier.height(48.dp))
-        Text("REF: $refId", fontSize = 12.sp, color = Color.DarkGray)
-        Spacer(modifier = Modifier.height(64.dp))
-        Button(onClick = onDone, modifier = Modifier.fillMaxWidth().height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black), shape = RoundedCornerShape(12.dp)) { Text("Done", fontWeight = FontWeight.Bold) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF4CAF50)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(64.dp))
+            }
+            
+            Spacer(modifier = Modifier.height(40.dp))
+            
+            Text("PAYMENT SUCCESSFUL", style = MaterialTheme.typography.labelLarge, color = Color(0xFF4CAF50), letterSpacing = 4.sp)
+            Text("₹$amount", style = MaterialTheme.typography.displayLarge, fontWeight = FontWeight.Black)
+            Text("to $name", style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Transaction Reference", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(refId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(64.dp))
+            
+            Button(
+                onClick = onDone,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp),
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Done", style = MaterialTheme.typography.titleLarge)
+            }
+        }
     }
 }
 
 @Composable
 fun CustomKeypad(onKeyClick: (String) -> Unit, onDeleteClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
     val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "del")
-    Column(modifier = Modifier.fillMaxWidth()) {
+    
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+    ) {
         keys.chunked(3).forEach { row ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
                 row.forEach { key ->
-                    Box(modifier = Modifier.size(80.dp).clickable { if (key == "del") onDeleteClick() else onKeyClick(key) }, contentAlignment = Alignment.Center) {
-                        if (key == "del") Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null, tint = Color.White, modifier = Modifier.size(32.dp))
-                        else Text(key, fontSize = 24.sp, fontWeight = FontWeight.Medium, color = Color.White)
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (key == "del") onDeleteClick() else onKeyClick(key)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(70.dp)
+                            .padding(4.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color.Transparent,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (key == "del") {
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null, modifier = Modifier.size(32.dp))
+                            } else {
+                                Text(key, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
+                            }
+                        }
                     }
                 }
             }
@@ -417,6 +904,23 @@ fun QrScannerScreen(onScanned: (String) -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    
+    var isScanning by remember { mutableStateOf(true) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            isScanning = false
+            cameraExecutor.shutdown()
+            try {
+                if (cameraProviderFuture.isDone) {
+                    cameraProviderFuture.get().unbindAll()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error unbinding camera", e)
+            }
+        }
+    }
     
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(factory = { ctx ->
@@ -425,11 +929,27 @@ fun QrScannerScreen(onScanned: (String) -> Unit, onBack: () -> Unit) {
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
                     val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
-                    val imageAnalysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+                    val imageAnalysis = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
                     val scanner = BarcodeScanning.getClient()
                     
-                    imageAnalysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy ->
-                        processImageProxy(scanner, imageProxy, onScanned)
+                    imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                        if (isScanning) {
+                            processImageProxy(scanner, imageProxy) { upiId ->
+                                if (isScanning) {
+                                    isScanning = false
+                                    ContextCompat.getMainExecutor(context).execute {
+                                        try {
+                                            cameraProvider.unbindAll()
+                                        } catch (e: Exception) { Log.e(TAG, "Unbind failed", e) }
+                                        onScanned(upiId)
+                                    }
+                                }
+                            }
+                        } else {
+                            imageProxy.close()
+                        }
                     }
 
                     try {
@@ -440,17 +960,67 @@ fun QrScannerScreen(onScanned: (String) -> Unit, onBack: () -> Unit) {
             }
         }, modifier = Modifier.fillMaxSize())
 
-        // Overlay UI - using systemBarsPadding to keep controls in safe area
-        Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                IconButton(onClick = onBack, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape)) {
+        // Overlay
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Scanner Frame
+            Box(
+                modifier = Modifier
+                    .size(280.dp)
+                    .align(Alignment.Center)
+                    .border(2.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(32.dp))
+            ) {
+                // Animated Scanning Line
+                val infiniteTransition = rememberInfiniteTransition(label = "ScanLine")
+                val offsetY by infiniteTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 280f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(2000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "LineOffset"
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .offset(y = offsetY.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(Color.Transparent, Color.White, Color.Transparent)
+                            )
+                        )
+                )
+            }
+            
+            Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.padding(16.dp).background(Color.Black.copy(0.4f), CircleShape)
+                ) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White)
                 }
+                Spacer(modifier = Modifier.weight(1f))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "Scan UPI QR Code",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        modifier = Modifier.alpha(0.9f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Align the code within the frame to pay",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.LightGray.copy(alpha = 0.7f)
+                    )
+                }
             }
-            Spacer(modifier = Modifier.weight(1f))
-            Box(modifier = Modifier.size(250.dp).align(Alignment.CenterHorizontally).border(2.dp, Color.White.copy(0.5f), RoundedCornerShape(24.dp)))
-            Spacer(modifier = Modifier.weight(1f))
-            Text("Scan any UPI QR Code", modifier = Modifier.fillMaxWidth().background(Color.Black.copy(0.5f)).padding(24.dp), textAlign = TextAlign.Center, color = Color.White)
         }
     }
 }

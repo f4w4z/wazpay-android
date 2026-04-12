@@ -204,7 +204,8 @@ class UssdService : AccessibilityService() {
                fullText.contains("processed") ||
                fullText.contains("request processed") ||
                fullText.contains("ref id") ||
-               fullText.contains("txn id")) &&
+               fullText.contains("txn id") ||
+               fullText.contains("thank you")) &&
                !fullText.contains("1.confirm") &&
                !fullText.contains("1. confirm")
     }

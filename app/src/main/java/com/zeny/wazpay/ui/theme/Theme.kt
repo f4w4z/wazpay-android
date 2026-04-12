@@ -2,39 +2,30 @@ package com.zeny.wazpay.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 
 private val DarkColorScheme = darkColorScheme(
-    primary = White,
+    primary = Primary,
     onPrimary = Black,
-    secondary = LightGray,
-    onSecondary = Black,
-    background = Black,
-    surface = Gray,
-    onSurface = White,
-    outline = DarkGray
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = Black,
-    onPrimary = White,
-    secondary = DarkGray,
+    secondary = Secondary,
     onSecondary = White,
-    background = White,
-    surface = LightGray,
-    onSurface = Black,
-    outline = DarkGray
+    background = Background,
+    surface = Surface,
+    onSurface = TextPrimary,
+    surfaceVariant = SurfaceVariant,
+    onSurfaceVariant = TextSecondary,
+    outline = Gray,
+    error = Error,
+    onError = White
 )
 
 @Composable
 fun WazpayTheme(
     content: @Composable () -> Unit
 ) {
-    val colorScheme = DarkColorScheme
-
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = DarkColorScheme,
         typography = Typography,
         content = content
     )
