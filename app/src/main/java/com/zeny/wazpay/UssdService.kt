@@ -74,7 +74,7 @@ class UssdService : AccessibilityService() {
                 }
             }
 
-            // 5. Remark Prompt (New)
+            // 5. Remark Prompt
             if (isRemarkInputPrompt(allTexts)) {
                 findInputNode(rootNode)?.let {
                     autoFillAndSend(it, "1")
@@ -90,7 +90,7 @@ class UssdService : AccessibilityService() {
                 }
             }
 
-            // 7. Success/Feedback Detection (Final Steps)
+            // 7. Success/Feedback Detection
             if (isSuccessMessage(allTexts)) {
                 sharedPreferences.edit { 
                     putBoolean("last_payment_success", true)
@@ -101,7 +101,7 @@ class UssdService : AccessibilityService() {
                 extractSuccessData(allTexts)
             }
 
-            // Handle Exit Prompt specifically (New)
+            // Handle Exit Prompt
             if (isExitDialog(allTexts)) {
                 findInputNode(rootNode)?.let {
                     Log.i(TAG, "Exit Dialog Detected - Replying 2")
@@ -127,7 +127,7 @@ class UssdService : AccessibilityService() {
 
     private fun handleFeedback(rootNode: AccessibilityNodeInfo, allTexts: List<String>, prefs: android.content.SharedPreferences) {
         Log.i(TAG, "Dismissing final dialog")
-        val cancelButton = findCancelButton(rootNode) ?: findButtonByText(rootNode, "cancel")
+        val cancelButton = findClickableWithKeywords(rootNode, listOf("cancel", "exit", "close", "dismiss"))
         if (cancelButton != null) {
             cancelButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         } else {
@@ -170,11 +170,8 @@ class UssdService : AccessibilityService() {
 
     private fun isSuccessMessage(texts: List<String>): Boolean {
         val fullText = texts.joinToString(" ").lowercase()
-        return fullText.contains("success") || 
-               fullText.contains("completed") || 
-               fullText.contains("sent to") || 
-               fullText.contains("paid to") ||
-               fullText.contains("successful")
+        return (fullText.contains("success") || fullText.contains("completed") || 
+                fullText.contains("sent to") || fullText.contains("paid to")) && !fullText.contains("1.confirm")
     }
 
     private fun isErrorMessage(texts: List<String>): Boolean = texts.any { it.contains("failed", true) || it.contains("invalid", true) }
@@ -191,9 +188,11 @@ class UssdService : AccessibilityService() {
     }
 
     private fun autoFillAndSend(node: AccessibilityNodeInfo, text: String) {
+        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        handler.postDelayed({ clickSendOrOk() }, 600)
+        handler.postDelayed({ clickSendOrOk() }, 800)
     }
 
     private fun findInputNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -203,51 +202,73 @@ class UssdService : AccessibilityService() {
     }
 
     private fun clickSendOrOk() {
-        rootInActiveWindow?.let { root -> findButton(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
-    }
-
-    private fun findButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isClickable) {
-            val txt = node.text?.toString()?.lowercase() ?: ""
-            if (txt in listOf("send", "ok", "submit", "accept")) return AccessibilityNodeInfo.obtain(node)
+        val root = rootInActiveWindow ?: return
+        
+        // 1. Try to find by positive keywords (Best)
+        val button = findClickableWithKeywords(root, listOf("send", "ok", "submit", "accept", "reply", "answer", "done", "confirm"))
+        if (button != null) {
+            button.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            return
         }
-        for (i in 0 until node.childCount) node.getChild(i)?.let { findButton(it)?.let { found -> return found } }
-        return null
-    }
 
-    private fun findCancelButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isClickable) {
-            val txt = node.text?.toString()?.lowercase() ?: ""
-            if (txt == "cancel" || txt == "exit") return AccessibilityNodeInfo.obtain(node)
+        // 2. Fallback to finding the last unlabeled button (Safest for custom dialogs)
+        val unlabeledButtons = mutableListOf<AccessibilityNodeInfo>()
+        findAllUnlabeledButtons(root, unlabeledButtons)
+        
+        if (unlabeledButtons.isNotEmpty()) {
+            // Pick the last one (usually the right-most 'Send' button)
+            val positiveButton = unlabeledButtons.last()
+            Log.i(TAG, "Clicking unlabeled button (fallback)")
+            positiveButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
-        for (i in 0 until node.childCount) node.getChild(i)?.let { findCancelButton(it)?.let { found -> return found } }
+    }
+
+    private fun findClickableWithKeywords(node: AccessibilityNodeInfo, keywords: List<String>): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
+        
+        if (keywords.any { text.contains(it) || contentDesc.contains(it) }) {
+            var current: AccessibilityNodeInfo? = node
+            while (current != null) {
+                if (current.isClickable) return AccessibilityNodeInfo.obtain(current)
+                current = current.parent
+            }
+        }
+        
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            if (child != null) {
+                val found = findClickableWithKeywords(child, keywords)
+                if (found != null) return found
+            }
+        }
         return null
     }
 
-    private fun findButtonByText(node: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
-        if (node.isClickable && node.text?.toString()?.equals(text, true) == true) return AccessibilityNodeInfo.obtain(node)
-        for (i in 0 until node.childCount) node.getChild(i)?.let { findButtonByText(it, text)?.let { found -> return found } }
-        return null
-    }
-
-    private fun findAnyClickable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isClickable && !node.isEditable) return AccessibilityNodeInfo.obtain(node)
-        for (i in 0 until node.childCount) node.getChild(i)?.let { findAnyClickable(it)?.let { found -> return found } }
-        return null
+    private fun findAllUnlabeledButtons(node: AccessibilityNodeInfo, list: MutableList<AccessibilityNodeInfo>) {
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        
+        // If it's a clickable button
+        if (node.isClickable && node.className?.contains("Button", true) == true) {
+            // EXCLUDE nodes that are clearly 'Cancel' or 'Exit'
+            if (!text.contains("cancel") && !text.contains("exit") && !text.contains("close") &&
+                !desc.contains("cancel") && !desc.contains("exit") && !desc.contains("close")) {
+                list.add(AccessibilityNodeInfo.obtain(node))
+            }
+        }
+        
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { findAllUnlabeledButtons(it, list) }
+        }
     }
 
     private fun extractSuccessData(texts: List<String>) {
         val fullText = texts.joinToString(" ")
-        Log.d(TAG, "Parsing Success Data: $fullText")
         val sharedPreferences = getSharedPreferences("wazpay_prefs", MODE_PRIVATE)
-        // Improved regex to catch RefId, Reference, Ref, ID, Txn ID followed by numbers/letters
         val refRegex = Regex("(?:RefId|Ref|Txn|Reference|ID|Id is)[:\\s]*([A-Z\\d]{8,})", RegexOption.IGNORE_CASE)
         sharedPreferences.edit { 
-            refRegex.find(fullText)?.let { 
-                val refId = it.groupValues[1]
-                Log.i(TAG, "Extracted Ref ID: $refId")
-                putString("last_ref_id", refId) 
-            } 
+            refRegex.find(fullText)?.let { putString("last_ref_id", it.groupValues[1]) }
         }
     }
 
