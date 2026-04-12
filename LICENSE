@@ -128,7 +128,7 @@ packaging a Component, but which is not part of that Component, and
 implement a Standard Interface for which an implementation is
 available to the public in source code form.  A "Component" in this
 context means a major essential component (kernel, window system, and
-so on) of the specific operating system (if any) on which the
+so on) of the specific operating system on which the
 executable work runs, or a compiler used to produce the work, or an
 object code interpreter used to run it.
 
