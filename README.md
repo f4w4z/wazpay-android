@@ -3,7 +3,7 @@
 ![Android](https://img.shields.io/badge/Platform-Android-brightgreen)
 ![Kotlin](https://img.shields.io/badge/Language-Kotlin-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Clean--Modular-orange)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
+![License](https://img.shields.io/badge/License-GPLv3-blue)
 
 WazPay is a specialized Android application designed to automate offline UPI payment flows using the USSD *99# infrastructure. By leveraging Android Accessibility Services, the app provides a hands free experience for mobile banking without internet connectivity. This solution is ideal for users in low connectivity areas or those seeking a reliable backup to data dependent payment apps.
 
@@ -62,6 +62,8 @@ The refactored modular structure provides significant technical benefits:
 *   android.permission.CAMERA: Required for UPI QR code scanning.
 *   android.permission.BIND_ACCESSIBILITY_SERVICE: Mandatory to interact with USSD menus.
 
-## Disclaimer
+## License
 
-WazPay is for productivity and educational purposes. Users must comply with NPCI guidelines and their respective bank's terms of service regarding USSD automation.
+WazPay is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file for more details.
