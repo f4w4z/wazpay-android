@@ -132,6 +132,13 @@ fun MainContent() {
     var amount by rememberSaveable { mutableStateOf("") }
     var upiPin by rememberSaveable { mutableStateOf("") }
 
+    var recentRecipients by remember { mutableStateOf(emptyList<String>()) }
+    
+    LaunchedEffect(Unit) {
+        val saved = sharedPreferences.getStringSet("recent_recipients", emptySet()) ?: emptySet()
+        recentRecipients = saved.toList()
+    }
+
     var isScannedInput by remember { mutableStateOf(false) }
 
     LaunchedEffect(screenState) {
@@ -226,8 +233,15 @@ fun MainContent() {
                     "RECIPIENT" -> RecipientScreen(
                         value = recipient, 
                         onValueChange = { recipient = it }, 
-                        onNext = { screenState = "AMOUNT" },
-                        onScanClick = { screenState = "SCANNER" }
+                        onNext = { 
+                            val currentRecipients = sharedPreferences.getStringSet("recent_recipients", emptySet()) ?: emptySet()
+                            val updated = (setOf(recipient) + currentRecipients).take(5).toSet()
+                            sharedPreferences.edit { putStringSet("recent_recipients", updated) }
+                            recentRecipients = updated.toList()
+                            screenState = "AMOUNT" 
+                        },
+                        onScanClick = { screenState = "SCANNER" },
+                        recentRecipients = recentRecipients
                     )
                     "SCANNER" -> QrScannerScreen(
                         onScanned = { upiId ->
@@ -487,7 +501,13 @@ fun SetupScreen(onComplete: (String, Int) -> Unit) {
 }
 
 @Composable
-fun RecipientScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> Unit, onScanClick: () -> Unit) {
+fun RecipientScreen(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onNext: () -> Unit,
+    onScanClick: () -> Unit,
+    recentRecipients: List<String> = emptyList()
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -531,42 +551,86 @@ fun RecipientScreen(value: String, onValueChange: (String) -> Unit, onNext: () -
                     Text(
                         "UPI ID or Mobile Number", 
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center
+                        style = MaterialTheme.typography.bodyLarge
                     ) 
                 },
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = MaterialTheme.typography.headlineMedium.copy(textAlign = TextAlign.Center),
-                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp),
+                textStyle = MaterialTheme.typography.bodyLarge,
+                shape = RoundedCornerShape(16.dp),
                 singleLine = true,
-                leadingIcon = {
-                    Box(modifier = Modifier.size(56.dp))
-                },
                 trailingIcon = {
-                    Box(
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .size(48.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(modifier = Modifier.padding(end = 8.dp)) {
                         IconButton(
                             onClick = onScanClick,
                             modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.primary)
                         ) {
-                            Icon(Icons.Default.QrCodeScanner, null, tint = MaterialTheme.colorScheme.onPrimary)
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(22.dp)
+                            )
                         }
                     }
                 },
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = Color.Transparent
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             )
+
+            if (recentRecipients.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(24.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    Text(
+                        "RECENT",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    recentRecipients.take(3).forEach { recent ->
+                        Surface(
+                            onClick = { onValueChange(recent) },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            color = Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.History,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    recent,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             
             Spacer(modifier = Modifier.height(32.dp))
             
@@ -586,6 +650,7 @@ fun RecipientScreen(value: String, onValueChange: (String) -> Unit, onNext: () -
 
 @Composable
 fun AmountScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> Unit, onBack: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -634,8 +699,18 @@ fun AmountScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> U
             Spacer(modifier = Modifier.height(60.dp))
             
             CustomKeypad(
-                onKeyClick = { if (value.length < 7) onValueChange(value + it) },
-                onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) }
+                onKeyClick = { 
+                    if (value.length < 7) {
+                        onValueChange(value + it)
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                },
+                onDeleteClick = { 
+                    if (value.isNotEmpty()) {
+                        onValueChange(value.dropLast(1))
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
+                }
             )
             
             Spacer(modifier = Modifier.height(48.dp))
@@ -658,6 +733,7 @@ fun AmountScreen(value: String, onValueChange: (String) -> Unit, onNext: () -> U
 @Composable
 fun PinScreen(value: String, onValueChange: (String) -> Unit, onPay: () -> Unit, onBack: () -> Unit) {
     var pinVisible by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
     
     Box(
         modifier = Modifier
@@ -717,8 +793,18 @@ fun PinScreen(value: String, onValueChange: (String) -> Unit, onPay: () -> Unit,
             Spacer(modifier = Modifier.height(48.dp))
             
             CustomKeypad(
-                onKeyClick = { if (value.length < 6) onValueChange(value + it) },
-                onDeleteClick = { if (value.isNotEmpty()) onValueChange(value.dropLast(1)) }
+                onKeyClick = { 
+                    if (value.length < 6) {
+                        onValueChange(value + it)
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                },
+                onDeleteClick = { 
+                    if (value.isNotEmpty()) {
+                        onValueChange(value.dropLast(1))
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
+                }
             )
             
             Spacer(modifier = Modifier.height(24.dp))

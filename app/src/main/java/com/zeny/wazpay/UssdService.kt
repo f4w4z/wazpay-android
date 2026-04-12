@@ -146,6 +146,7 @@ class UssdService : AccessibilityService() {
 
         val refRegex = Regex("(?:Ref\\s*Id|Txn\\s*Id|Reference|ID|ID is)[:\\s]*([\\dA-Z]+)", RegexOption.IGNORE_CASE)
         val nameRegex = Regex("(?:payment to|Sent to|Paid to|Transfer to|to)[:\\s]+([^\\d\\n,]+)", RegexOption.IGNORE_CASE)
+        val amountRegex = Regex("(?:RS|INR|₹)\\s*([\\d,.]+)", RegexOption.IGNORE_CASE)
 
         sharedPreferences.edit {
             refRegex.find(fullText)?.let { 
@@ -159,6 +160,11 @@ class UssdService : AccessibilityService() {
                     Log.i(TAG, "Extracted Recipient Name: $name")
                     putString("last_recipient_name", name)
                 }
+            }
+            amountRegex.find(fullText)?.let {
+                val amount = it.groupValues[1].replace(",", "")
+                Log.i(TAG, "Extracted Amount: $amount")
+                putString("last_amount", amount)
             }
         }
     }
