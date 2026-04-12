@@ -16,8 +16,11 @@ class UssdService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
-        
         if (packageName !in telecomPackages) return
+
+        val sharedPreferences = getSharedPreferences("wazpay_prefs", MODE_PRIVATE)
+        val isTransactionActive = sharedPreferences.getBoolean("transaction_in_progress", false)
+        if (!isTransactionActive) return
 
         val rootNode = rootInActiveWindow ?: return
         try {
@@ -27,10 +30,22 @@ class UssdService : AccessibilityService() {
 
             Log.d(TAG, "USSD Text [${packageName}]: ${allTexts.joinToString(" | ")}")
 
-            val sharedPreferences = getSharedPreferences("wazpay_prefs", MODE_PRIVATE)
             val pendingRecipient = sharedPreferences.getString("pending_recipient", null)
             val pendingAmount = sharedPreferences.getString("pending_amount", null)
             val pendingPin = sharedPreferences.getString("pending_pin", null)
+
+            // --- Error Detection Logic ---
+            if (isErrorMessage(allTexts)) {
+                Log.e(TAG, "USSD Error detected: ${allTexts.joinToString(" | ")}")
+                sharedPreferences.edit { 
+                    putBoolean("transaction_in_progress", false)
+                    putString("last_error", allTexts.firstOrNull { it.contains("invalid", true) || it.contains("valid", true) } ?: "Service not supported by your SIM/Bank")
+                }
+                // Try to dismiss the error dialog
+                clickSendOrOk()
+                bringAppToForeground(delay = 1000)
+                return
+            }
 
             // --- Success Detection Logic (Always check) ---
             val isSuccess = isSuccessMessage(allTexts)
@@ -38,6 +53,10 @@ class UssdService : AccessibilityService() {
                 Log.i(TAG, "Success Detected! Saving data.")
                 sharedPreferences.edit { 
                     putBoolean("last_payment_success", true)
+                    // Set fallbacks from pending data
+                    putString("last_recipient_name", pendingRecipient)
+                    putString("last_amount", pendingAmount)
+                    
                     remove("pending_recipient")
                     remove("pending_amount")
                     remove("pending_pin")
@@ -60,6 +79,18 @@ class UssdService : AccessibilityService() {
                 findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                     autoFillAndSend(it, "1")
                     return
+                }
+            }
+
+            // --- Dynamic Menu Navigation (New) ---
+            if (isSendMoneyMenu(allTexts)) {
+                val option = findMenuOption(allTexts, listOf("UPI ID", "VPA", "Virtual ID"))
+                if (option != null) {
+                    Log.i(TAG, "Step: Navigating Menu - Found $option for UPI ID")
+                    findNodeByClassName(rootNode, "android.widget.EditText")?.let {
+                        autoFillAndSend(it, option)
+                        return
+                    }
                 }
             }
 
@@ -97,6 +128,9 @@ class UssdService : AccessibilityService() {
                 if (isSuccessFeedback && pendingRecipient != null) {
                     sharedPreferences.edit { 
                         putBoolean("last_payment_success", true)
+                        putString("last_recipient_name", pendingRecipient)
+                        putString("last_amount", pendingAmount)
+                        
                         remove("pending_recipient")
                         remove("pending_amount")
                         remove("pending_pin")
@@ -118,6 +152,7 @@ class UssdService : AccessibilityService() {
             // 7. Exit Dialog
             if (isExitDialog(allTexts)) {
                 Log.i(TAG, "Step: Exit Dialog Detected")
+                sharedPreferences.edit { putBoolean("transaction_in_progress", false) }
                 val editText = findNodeByClassName(rootNode, "android.widget.EditText")
                 if (editText != null) {
                     autoFillAndSend(editText, "2")
@@ -131,6 +166,7 @@ class UssdService : AccessibilityService() {
             // 8. Thank You / Final Screen
             if (isThankYouDialog(allTexts)) {
                 Log.i(TAG, "Step: Final Success Screen Detected")
+                sharedPreferences.edit { putBoolean("transaction_in_progress", false) }
                 clickSendOrOk()
                 bringAppToForeground(delay = 500)
                 return
@@ -145,7 +181,8 @@ class UssdService : AccessibilityService() {
         val sharedPreferences = getSharedPreferences("wazpay_prefs", MODE_PRIVATE)
 
         val refRegex = Regex("(?:Ref\\s*Id|Txn\\s*Id|Reference|ID|ID is)[:\\s]*([\\dA-Z]+)", RegexOption.IGNORE_CASE)
-        val nameRegex = Regex("(?:payment to|Sent to|Paid to|Transfer to|to)[:\\s]+([^\\d\\n,]+)", RegexOption.IGNORE_CASE)
+        // More specific name regex: removed naked "to" to avoid matching promo sentences
+        val nameRegex = Regex("(?:payment to|Sent to|Paid to|Transfer to)[:\\s]+([^\\d\\n,]{2,35})", RegexOption.IGNORE_CASE)
         val amountRegex = Regex("(?:RS|INR|₹)\\s*([\\d,.]+)", RegexOption.IGNORE_CASE)
 
         sharedPreferences.edit {
@@ -156,15 +193,17 @@ class UssdService : AccessibilityService() {
             }
             nameRegex.find(fullText)?.let {
                 val name = it.groupValues[1].trim()
-                if (name.isNotEmpty() && !name.equals("Exit", true) && !name.equals("Cancel", true)) {
+                // Extra validation: Names shouldn't usually have many spaces or special chars
+                if (name.isNotEmpty() && name.length <= 30 && !name.contains("...") && 
+                    !name.equals("Exit", true) && !name.equals("Cancel", true)) {
                     Log.i(TAG, "Extracted Recipient Name: $name")
                     putString("last_recipient_name", name)
                 }
             }
             amountRegex.find(fullText)?.let {
-                val amount = it.groupValues[1].replace(",", "")
-                Log.i(TAG, "Extracted Amount: $amount")
-                putString("last_amount", amount)
+                val amountValue = it.groupValues[1].replace(",", "")
+                Log.i(TAG, "Extracted Amount: $amountValue")
+                putString("last_amount", amountValue)
             }
         }
     }
@@ -180,6 +219,18 @@ class UssdService : AccessibilityService() {
 
     private fun isConfirmationPrompt(texts: List<String>): Boolean =
         texts.any { (it.contains("1.Confirm", true) || it.contains("1. Confirm", true) || it.contains("1.Send", true) || it.contains("1. Send", true)) && it.contains("₹", true) }
+
+    private fun isSendMoneyMenu(texts: List<String>): Boolean =
+        texts.any { it.contains("Send Money", true) } && texts.any { it.contains("UPI ID", true) || it.contains("VPA", true) }
+
+    private fun findMenuOption(texts: List<String>, keywords: List<String>): String? {
+        val fullText = texts.joinToString("\n")
+        for (keyword in keywords) {
+            val regex = Regex("(\\d)\\.?\\s*${keyword}", RegexOption.IGNORE_CASE)
+            regex.find(fullText)?.let { return it.groupValues[1] }
+        }
+        return null
+    }
 
     private fun isFeedbackPrompt(texts: List<String>): Boolean = 
         texts.any { 
@@ -197,6 +248,15 @@ class UssdService : AccessibilityService() {
 
     private fun isThankYouDialog(texts: List<String>): Boolean = 
         texts.any { it.contains("Thank you", true) || it.contains("Payment Sent", true) || it.contains("completed", true) || it.contains("Request processed", true) }
+
+    private fun isErrorMessage(texts: List<String>): Boolean = 
+        texts.any { 
+            it.contains("invalid", true) || it.contains("not a valid", true) || 
+            it.contains("error", true) || it.contains("failed", true) || 
+            it.contains("wrong", true) || it.contains("denied", true) ||
+            it.contains("limit", true) || it.contains("insufficient", true) ||
+            it.contains("unable", true) || it.contains("not supported", true)
+        }
 
     private fun isSuccessMessage(texts: List<String>): Boolean {
         // Safety check: if it's a PIN prompt or Input prompt, it's not a success message yet
@@ -310,6 +370,14 @@ class UssdService : AccessibilityService() {
     private fun bringAppToForeground(delay: Long) {
         handler.postDelayed({
             try {
+                val sharedPreferences = getSharedPreferences("wazpay_prefs", MODE_PRIVATE)
+                val wasUserInitiated = sharedPreferences.getBoolean("transaction_in_progress", false)
+                
+                if (!wasUserInitiated) {
+                    Log.w(TAG, "Blocking unsolicited foreground jump. App was not expecting a transaction.")
+                    return@postDelayed
+                }
+
                 Log.i(TAG, "Action: Bringing app to foreground")
                 val intent = Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)

@@ -81,7 +81,15 @@ private const val TAG = "WazPay-Main"
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.i(TAG, "App started")
+        Log.i(TAG, "App started - Clearing state")
+        val sharedPreferences = getSharedPreferences("wazpay_prefs", Context.MODE_PRIVATE)
+        sharedPreferences.edit { 
+            putBoolean("transaction_in_progress", false)
+            remove("last_payment_success")
+            remove("pending_recipient")
+            remove("pending_amount")
+            remove("pending_pin")
+        }
         enableEdgeToEdge()
         setContent {
             WazpayTheme {
@@ -257,18 +265,29 @@ fun MainContent() {
                             putString("pending_recipient", recipient)
                             putString("pending_amount", amount)
                             putString("pending_pin", upiPin)
+                            putBoolean("transaction_in_progress", true)
                             remove("last_payment_success")
                         }
                         screenState = "PROCESSING"
                         initiatePayment(context, recipient, amount, selectedSim)
                     }, onBack = { screenState = "AMOUNT" })
-                    "PROCESSING" -> TransactionProcessingScreen { screenState = "RECIPIENT" }
+                    "PROCESSING" -> TransactionProcessingScreen(
+                        error = sharedPreferences.getString("last_error", null),
+                        onCancel = { 
+                            sharedPreferences.edit { 
+                                putBoolean("transaction_in_progress", false)
+                                remove("last_error")
+                            }
+                            screenState = "RECIPIENT" 
+                        }
+                    )
                     "SUCCESS" -> {
                         val name = sharedPreferences.getString("last_recipient_name", recipient) ?: recipient
                         val refId = sharedPreferences.getString("last_ref_id", "N/A") ?: "N/A"
                         val successAmount = sharedPreferences.getString("pending_amount", amount) ?: amount
                         SuccessScreen(name, refId, successAmount) {
                             sharedPreferences.edit { 
+                                putBoolean("transaction_in_progress", false)
                                 remove("last_payment_success")
                                 remove("last_recipient_name")
                                 remove("last_ref_id")
@@ -824,7 +843,7 @@ fun PinScreen(value: String, onValueChange: (String) -> Unit, onPay: () -> Unit,
 }
 
 @Composable
-fun TransactionProcessingScreen(onCancel: () -> Unit) {
+fun TransactionProcessingScreen(error: String? = null, onCancel: () -> Unit) {
     val infiniteTransition = rememberInfiniteTransition(label = "ProcessingTransition")
     val rotation by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -840,39 +859,79 @@ fun TransactionProcessingScreen(onCancel: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .systemBarsPadding(),
+            .systemBarsPadding()
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Box(
-            modifier = Modifier
-                .size(120.dp)
-                .graphicsLayer { rotationZ = rotation }
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(80.dp),
-                color = MaterialTheme.colorScheme.primary,
-                strokeWidth = 6.dp,
-                strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+        if (error != null) {
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.ErrorOutline, 
+                    null, 
+                    tint = MaterialTheme.colorScheme.error, 
+                    modifier = Modifier.size(64.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(40.dp))
+            Text(
+                "Transaction Failed", 
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.error
             )
-        }
-        Spacer(modifier = Modifier.height(48.dp))
-        Text("Processing Transaction", style = MaterialTheme.typography.headlineMedium)
-        Text("Automating USSD requests...", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        
-        Spacer(modifier = Modifier.height(80.dp))
-        
-        OutlinedButton(
-            onClick = onCancel,
-            modifier = Modifier
-                .width(200.dp)
-                .height(56.dp),
-            shape = RoundedCornerShape(28.dp)
-        ) {
-            Text("Cancel", style = MaterialTheme.typography.titleLarge)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                error, 
+                style = MaterialTheme.typography.bodyLarge, 
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(64.dp))
+            Button(
+                onClick = onCancel,
+                modifier = Modifier.fillMaxWidth().height(64.dp),
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("Try Again", style = MaterialTheme.typography.titleLarge)
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(120.dp)
+                    .graphicsLayer { rotationZ = rotation }
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(80.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    strokeWidth = 6.dp,
+                    strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                )
+            }
+            Spacer(modifier = Modifier.height(48.dp))
+            Text("Processing Transaction", style = MaterialTheme.typography.headlineMedium)
+            Text("Automating USSD requests...", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            
+            Spacer(modifier = Modifier.height(80.dp))
+            
+            OutlinedButton(
+                onClick = onCancel,
+                modifier = Modifier
+                    .width(200.dp)
+                    .height(56.dp),
+                shape = RoundedCornerShape(28.dp)
+            ) {
+                Text("Cancel", style = MaterialTheme.typography.titleLarge)
+            }
         }
     }
 }
@@ -1135,8 +1194,8 @@ private fun processImageProxy(scanner: com.google.mlkit.vision.barcode.BarcodeSc
 }
 
 private fun initiatePayment(context: Context, recipient: String, amount: String, simIndex: Int) {
-    val isMobile = recipient.all { it.isDigit() } && recipient.length >= 10
-    val ussdCode = if (isMobile) "*99*1*1*$recipient*$amount*1#" else "*99*1*3#"
+    // Dial only the Send Money menu (*99*1#) and let UssdService navigate dynamically
+    val ussdCode = "*99*1#"
     Log.d(TAG, "Dialing USSD: $ussdCode on SIM $simIndex")
     val encodedUssd = ussdCode.replace("#", Uri.encode("#"))
     val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$encodedUssd")).apply {
