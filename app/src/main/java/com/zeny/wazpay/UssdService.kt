@@ -168,7 +168,14 @@ class UssdService : AccessibilityService() {
 
     private fun isConfirmationPrompt(texts: List<String>): Boolean = texts.any { it.contains("Confirm", true) || it.contains("Proceed", true) }
 
-    private fun isSuccessMessage(texts: List<String>): Boolean = texts.any { it.contains("success", true) || it.contains("completed", true) }
+    private fun isSuccessMessage(texts: List<String>): Boolean {
+        val fullText = texts.joinToString(" ").lowercase()
+        return fullText.contains("success") || 
+               fullText.contains("completed") || 
+               fullText.contains("sent to") || 
+               fullText.contains("paid to") ||
+               fullText.contains("successful")
+    }
 
     private fun isErrorMessage(texts: List<String>): Boolean = texts.any { it.contains("failed", true) || it.contains("invalid", true) }
 
@@ -231,9 +238,17 @@ class UssdService : AccessibilityService() {
 
     private fun extractSuccessData(texts: List<String>) {
         val fullText = texts.joinToString(" ")
+        Log.d(TAG, "Parsing Success Data: $fullText")
         val sharedPreferences = getSharedPreferences("wazpay_prefs", MODE_PRIVATE)
-        val refRegex = Regex("(?:Ref|Txn)[:\\s]*([\\dA-Z]+)", RegexOption.IGNORE_CASE)
-        sharedPreferences.edit { refRegex.find(fullText)?.let { putString("last_ref_id", it.groupValues[1]) } }
+        // Improved regex to catch RefId, Reference, Ref, ID, Txn ID followed by numbers/letters
+        val refRegex = Regex("(?:RefId|Ref|Txn|Reference|ID|Id is)[:\\s]*([A-Z\\d]{8,})", RegexOption.IGNORE_CASE)
+        sharedPreferences.edit { 
+            refRegex.find(fullText)?.let { 
+                val refId = it.groupValues[1]
+                Log.i(TAG, "Extracted Ref ID: $refId")
+                putString("last_ref_id", refId) 
+            } 
+        }
     }
 
     private fun bringAppToForeground(delay: Long) {
