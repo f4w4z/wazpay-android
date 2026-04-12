@@ -29,6 +29,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -50,6 +52,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -63,6 +66,9 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.zeny.wazpay.ui.theme.WazpayTheme
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 
 private const val TAG = "WazPay-Main"
@@ -475,14 +481,59 @@ private fun processImageProxy(scanner: com.google.mlkit.vision.barcode.BarcodeSc
 
 @Composable
 fun HistoryScreen(context: Context, onBack: () -> Unit) {
+    val db = remember { AppDatabase.getDatabase(context) }
+    val transactions by db.transactionDao().getAll().collectAsState(initial = emptyList())
+
     Column(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding().padding(24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) }
             Text("Transaction History", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
         Spacer(modifier = Modifier.height(24.dp))
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No transactions found", color = Color.Gray)
+        
+        if (transactions.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No transactions found", color = Color.Gray)
+            }
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(transactions) { transaction ->
+                    TransactionItem(transaction)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TransactionItem(transaction: Transaction) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF111111)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(transaction.recipient, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(transaction.timestamp)),
+                    color = Color.Gray,
+                    fontSize = 12.sp
+                )
+                if (!transaction.refId.isNullOrEmpty()) {
+                    Text("Ref: ${transaction.refId}", color = Color.DarkGray, fontSize = 10.sp)
+                }
+            }
+            Text(
+                "₹${transaction.amount}",
+                color = if (transaction.status == "SUCCESS") Color.White else Color.Red,
+                fontWeight = FontWeight.Black,
+                fontSize = 18.sp
+            )
         }
     }
 }
