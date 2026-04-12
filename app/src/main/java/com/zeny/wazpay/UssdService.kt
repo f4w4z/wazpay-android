@@ -84,9 +84,12 @@ class UssdService : AccessibilityService() {
 
             // --- Dynamic Menu Navigation (New) ---
             if (isSendMoneyMenu(allTexts)) {
-                val option = findMenuOption(allTexts, listOf("UPI ID", "VPA", "Virtual ID"))
+                val isMobile = pendingRecipient?.all { it.isDigit() } == true && pendingRecipient.length >= 10
+                val searchKeywords = if (isMobile) listOf("Mobile Number", "Mobile", "Phon") else listOf("UPI ID", "VPA", "Virtual ID")
+                
+                val option = findMenuOption(allTexts, searchKeywords)
                 if (option != null) {
-                    Log.i(TAG, "Step: Navigating Menu - Found $option for UPI ID")
+                    Log.i(TAG, "Step: Navigating Menu - Found $option for ${if (isMobile) "Mobile" else "UPI"}")
                     findNodeByClassName(rootNode, "android.widget.EditText")?.let {
                         autoFillAndSend(it, option)
                         return
@@ -221,7 +224,7 @@ class UssdService : AccessibilityService() {
         texts.any { (it.contains("1.Confirm", true) || it.contains("1. Confirm", true) || it.contains("1.Send", true) || it.contains("1. Send", true)) && it.contains("₹", true) }
 
     private fun isSendMoneyMenu(texts: List<String>): Boolean =
-        texts.any { it.contains("Send Money", true) } && texts.any { it.contains("UPI ID", true) || it.contains("VPA", true) }
+        texts.any { it.contains("Send Money", true) } && (texts.any { it.contains("UPI ID", true) || it.contains("VPA", true) || it.contains("Mobile", true) })
 
     private fun findMenuOption(texts: List<String>, keywords: List<String>): String? {
         val fullText = texts.joinToString("\n")
