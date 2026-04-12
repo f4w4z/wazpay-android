@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WazPay</string>
+    <string name="accessibility_service_description">Automatically fills the UPI PIN in USSD dialogs for a faster payment experience.</string>
+</resources>
