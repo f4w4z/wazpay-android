@@ -212,6 +212,7 @@ fun MainContent(prefs: PreferenceManager) {
                         prefs.pendingPin = upiPin
                         prefs.transactionInProgress = true
                         prefs.lastPaymentSuccess = false
+                        prefs.lastError = null
                         
                         screenState = "PROCESSING"
                         initiatePayment(context, recipient, amount, prefs.selectedSim)
