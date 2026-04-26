@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -15,7 +16,10 @@ import com.zeny.wazpay.logic.UssdScreen
 class UssdService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
+    private val submitAction = Runnable { clickSendOrOk() }
     private lateinit var prefs: PreferenceManager
+    private var lastHandledSignature: String? = null
+    private var lastHandledAtMs: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -24,19 +28,22 @@ class UssdService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
-        if (packageName !in telecomPackages) return
-        
-        if (!prefs.transactionInProgress) return
+        if (!prefs.transactionInProgress) {
+            resetProcessingGuards()
+            return
+        }
 
         val rootNode = rootInActiveWindow ?: return
         try {
             val allTexts = mutableListOf<String>()
             findAllTextNodes(rootNode, allTexts)
             if (allTexts.isEmpty()) return
+            if (!shouldHandleWindow(packageName)) return
 
             Log.d(TAG, "USSD Text [${packageName}]: ${allTexts.joinToString(" | ")}")
 
             val screen = UssdParser.parse(allTexts)
+            if (shouldSkipDuplicate(screen, allTexts)) return
             Log.d(TAG, "Detected Screen: ${screen::class.simpleName}")
 
             when (screen) {
@@ -93,6 +100,7 @@ class UssdService : AccessibilityService() {
                 is UssdScreen.Error -> {
                     prefs.transactionInProgress = false
                     prefs.lastError = screen.message
+                    resetProcessingGuards()
                     clickSendOrOk()
                 }
                 UssdScreen.Unknown -> {
@@ -112,6 +120,7 @@ class UssdService : AccessibilityService() {
             clickSendOrOk()
         }
         prefs.transactionInProgress = false
+        resetProcessingGuards()
         bringAppToForeground(delay = 600)
     }
 
@@ -123,7 +132,32 @@ class UssdService : AccessibilityService() {
     private fun autoFillAndSend(node: AccessibilityNodeInfo, text: String) {
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        handler.postDelayed({ clickSendOrOk() }, 800)
+        handler.removeCallbacks(submitAction)
+        handler.postDelayed(submitAction, 800)
+    }
+
+    private fun shouldHandleWindow(packageName: String): Boolean {
+        if (packageName in telecomPackages) return true
+        val normalizedPackage = packageName.lowercase()
+        return telecomPackageHints.any { normalizedPackage.contains(it) }
+    }
+
+    private fun shouldSkipDuplicate(screen: UssdScreen, texts: List<String>): Boolean {
+        val signature = "${screen::class.java.name}|${texts.joinToString("\n")}"
+        val now = SystemClock.uptimeMillis()
+        if (signature == lastHandledSignature && now - lastHandledAtMs < DUPLICATE_WINDOW_COOLDOWN_MS) {
+            Log.d(TAG, "Skipping duplicate USSD window for ${screen::class.simpleName}")
+            return true
+        }
+        lastHandledSignature = signature
+        lastHandledAtMs = now
+        return false
+    }
+
+    private fun resetProcessingGuards() {
+        handler.removeCallbacks(submitAction)
+        lastHandledSignature = null
+        lastHandledAtMs = 0L
     }
 
     private fun findInputNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -217,5 +251,7 @@ class UssdService : AccessibilityService() {
     companion object {
         private const val TAG = "WazPay-USSD"
         private val telecomPackages = setOf("com.android.phone", "com.android.server.telecom", "com.google.android.dialer", "com.samsung.android.incallui", "com.android.systemui")
+        private val telecomPackageHints = setOf("dialer", "telecom", "phone", "telephony", "incall", "callui", "systemui")
+        private const val DUPLICATE_WINDOW_COOLDOWN_MS = 1200L
     }
 }
