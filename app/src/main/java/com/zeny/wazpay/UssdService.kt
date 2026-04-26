@@ -88,7 +88,12 @@ class UssdService : AccessibilityService() {
                     prefs.pendingRecipient = null
                     prefs.pendingAmount = null
                     prefs.pendingPin = null
-                    // Don't set transactionInProgress = false yet, wait for feedback/exit
+                    
+                    // If the success screen has an "Exit" option, use it immediately
+                    screen.exitOption?.let { option ->
+                        Log.d(TAG, "Success screen contains exit option: $option. Sending it.")
+                        findInputNode(rootNode)?.let { autoFillAndSend(it, option) }
+                    }
                 }
                 is UssdScreen.ExitDialog -> {
                     val exitOption = UssdParser.findExitOption(allTexts.joinToString("\n")) ?: "2"
@@ -126,12 +131,30 @@ class UssdService : AccessibilityService() {
 
     private fun findAllTextNodes(node: AccessibilityNodeInfo, texts: MutableList<String>) {
         node.text?.let { texts.add(it.toString()) }
+        node.contentDescription?.let { texts.add(it.toString()) }
         for (i in 0 until node.childCount) node.getChild(i)?.let { findAllTextNodes(it, texts) }
     }
 
     private fun autoFillAndSend(node: AccessibilityNodeInfo, text: String) {
-        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        Log.i(TAG, "Auto-filling text: '$text'")
+        
+        // Ensure the node is focused before setting text
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        
+        val args = Bundle().apply { 
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) 
+        }
+        val success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        Log.i(TAG, "Set text result: $success")
+        
+        if (!success) {
+            // Fallback for some older devices or custom implementations
+            val clipboard = Bundle().apply { 
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) 
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_PASTE, clipboard)
+        }
+
         handler.removeCallbacks(submitAction)
         handler.postDelayed(submitAction, 800)
     }
@@ -161,8 +184,15 @@ class UssdService : AccessibilityService() {
     }
 
     private fun findInputNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isEditable) return AccessibilityNodeInfo.obtain(node)
-        for (i in 0 until node.childCount) node.getChild(i)?.let { findInputNode(it)?.let { found -> return found } }
+        // Some devices use EditText, some just marked as editable, some have SET_TEXT action
+        if (node.isEditable || 
+            node.className?.contains("EditText", true) == true ||
+            (node.actions and AccessibilityNodeInfo.ACTION_SET_TEXT != 0)) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { findInputNode(it)?.let { found -> return found } }
+        }
         return null
     }
 
