@@ -199,7 +199,7 @@ class UssdService : AccessibilityService() {
     private fun clickSendOrOk() {
         val root = rootInActiveWindow ?: return
         
-        // Strategy 1: Find by common "Positive" keywords!
+        // Strategy 1: Find by common "Positive" keywords
         val positiveKeywords = listOf("send", "ok", "submit", "accept", "reply", "answer", "done", "confirm", "call", "dial", "proceed")
         val positiveButton = findClickableWithKeywords(root, positiveKeywords)
         if (positiveButton != null) {
